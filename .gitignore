@@ -1,0 +1,13 @@
+venv/
+build/
+dist/
+downloads/
+__pycache__/
+*.pyc
+*.pyo
+*.bak.*
+.DS_Store
+*.zip
+pinterest/
+pinterest.zip
+diagnose.txt
