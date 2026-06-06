@@ -41,7 +41,7 @@ jobs:
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        run: cd dist && zip -r ../${{ matrix.artifact_name }} pinnow.app
+        run: ditto -c -k --sequesterRsrc --keepParent dist/pinnow.app ${{ matrix.artifact_name }}
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
