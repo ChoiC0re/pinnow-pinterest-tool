@@ -404,7 +404,7 @@ def board(board_url, output, max_pins):
     # 실패한 핀 목록을 파일로 저장
     if failed_urls:
         failed_path = os.path.join(output, "failed_pins.txt")
-        with open(failed_path, "w") as f:
+        with open(failed_path, "w", encoding="utf-8") as f:
             f.write("\n".join(failed_urls) + "\n")
         click.echo(f"\n완료: 성공 {ok}개 / 실패 {len(failed_urls)}개")
         click.echo(f"실패한 핀 목록 → {failed_path}")

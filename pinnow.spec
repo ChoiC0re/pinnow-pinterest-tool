@@ -28,7 +28,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['hook_utf8.py'],
     excludes=[],
     noarchive=False,
 )

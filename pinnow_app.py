@@ -177,6 +177,8 @@ def _install_chromium(status_cb):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         creationflags=creationflags,
     )
     for line in iter(proc.stdout.readline, ""):
@@ -366,7 +368,7 @@ class DownloadWorker(QObject):
                 failed_path = ""
                 if failed_urls:
                     failed_path = os.path.join(self.output, "failed_pins.txt")
-                    with open(failed_path, "w") as f:
+                    with open(failed_path, "w", encoding="utf-8") as f:
                         f.write("\n".join(failed_urls) + "\n")
                     self.failed_urls.emit(failed_urls)
 
@@ -947,6 +949,17 @@ class MainWindow(QMainWindow):
 # ── 진입점 ────────────────────────────────────────────────────────────────────
 
 def main():
+    # Windows: UTF-8 강제 (cp949 디코드 오류 방지)
+    if sys.platform == "win32":
+        os.environ["PYTHONUTF8"] = "1"
+        os.environ["PYTHONIOENCODING"] = "utf-8"
+        if hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(encoding="utf-8")
+                sys.stderr.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
+
     # Windows: QApplication 생성 전 DPI 설정 필수
     if sys.platform == "win32":
         os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
