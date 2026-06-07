@@ -4,6 +4,7 @@
 import json
 import re
 import os
+import sys
 import time
 from typing import Optional
 import click
@@ -24,9 +25,22 @@ SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
 RESOLUTION_FALLBACKS = ["originals", "736x", "474x", "236x"]
-_SCRIPT_DIR = "/Users/choi_c0re/pinnow"
-COOKIES_FILE = os.path.join(_SCRIPT_DIR, "cookies.json")
-BROWSER_DATA_DIR = os.path.join(_SCRIPT_DIR, "browser_data")
+
+
+def _default_data_dir() -> str:
+    if os.environ.get("PINNOW_DATA_DIR"):
+        return os.environ["PINNOW_DATA_DIR"]
+    if sys.platform == "win32":
+        root = os.environ.get("APPDATA", os.path.expanduser("~\\AppData\\Roaming"))
+        return os.path.join(root, "ChoiC0re", "pinnow")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/pinnow")
+    return os.path.expanduser("~/.local/share/pinnow")
+
+
+DATA_DIR = _default_data_dir()
+COOKIES_FILE = os.path.join(DATA_DIR, "cookies.json")
+BROWSER_DATA_DIR = os.path.join(DATA_DIR, "browser_data")
 
 
 # ── 유틸 ──────────────────────────────────────────────────────────────────────
@@ -122,25 +136,70 @@ def download_with_fallback(base_url: str, dest: str) -> bool:
 
 # ── 보드 핀 목록 수집 ─────────────────────────────────────────────────────────
 
-def fetch_board_pins(board_url: str, max_pins: int) -> list:
+# 섹션이 있는 보드는 BoardSectionPinsResource로 핀이 옴 — 모두 캡처
+_FEED_RESOURCES = ("BoardFeedResource", "BoardSectionPinsResource", "SectionFeedResource")
+
+_DOM_JS = """() => {
+    const feed = document.querySelector("[data-test-id='board-feed']");
+    if (!feed) return [];
+    const seen = new Set();
+    const out = [];
+    feed.querySelectorAll("a[href*='/pin/']").forEach(a => {
+        const m = a.href.match(/\\/pin\\/(\\d+)/);
+        if (!m || seen.has(m[1])) return;
+        seen.add(m[1]);
+        const img = a.querySelector("img");
+        const src = img
+            ? (img.src || img.dataset.src || (img.srcset ? img.srcset.split(' ')[0] : '') || '')
+            : '';
+        if (src && !src.startsWith('data:')) out.push({id: m[1], url: src});
+    });
+    return out;
+}"""
+
+
+def fetch_board_pins(board_url: str, max_pins: int, log_cb=None) -> list:
     """
-    Playwright로 BoardFeedResource API 응답을 인터셉트해 핀 전체 수집.
+    Playwright로 Pinterest API 응답을 인터셉트해 핀 전체 수집.
     browser_data/ 디렉토리가 있으면 로그인 세션을 재사용해 비공개 핀도 수집.
     """
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+    def _log(msg):
+        if log_cb:
+            log_cb(msg)
+        else:
+            click.echo(msg)
 
     normalized = re.sub(r"https?://[a-z]+\.pinterest\.com", "https://www.pinterest.com", board_url)
     logged_in = os.path.isdir(BROWSER_DATA_DIR)
 
     pins = []
     seen = set()
+    api_batches = [0]
+    seen_resources: set = set()
 
     def on_response(response):
-        if "BoardFeedResource" not in response.url:
+        # 진단: 모든 Pinterest resource URL 기록 (어떤 API가 호출되는지 확인)
+        if "pinterest.com/resource/" in response.url:
+            m = re.search(r"/resource/([^/]+)/", response.url)
+            if m:
+                rname = m.group(1)
+                if rname not in seen_resources:
+                    seen_resources.add(rname)
+                    _log(f"  [감지] {rname}")
+
+        if not any(r in response.url for r in _FEED_RESOURCES):
             return
         try:
+            if response.status != 200:
+                return
             data = response.json()
-            items = data.get("resource_response", {}).get("data", []) or []
+            resource_resp = data.get("resource_response", {})
+            items = resource_resp.get("data", []) or []
+            bookmark = resource_resp.get("bookmark")
+
+            before = len(pins)
             for item in items:
                 pin_id = str(item.get("id", ""))
                 if not pin_id or pin_id in seen:
@@ -150,12 +209,31 @@ def fetch_board_pins(board_url: str, max_pins: int) -> list:
                 if img_url:
                     seen.add(pin_id)
                     pins.append({"id": pin_id, "url": img_url})
+            gained = len(pins) - before
+
+            m2 = re.search(r"/resource/([^/]+)/", response.url)
+            rname = m2.group(1) if m2 else "FeedResource"
+            end_flag = " ← 마지막" if bookmark is None else ""
+            _log(f"  [{rname}] +{gained} → {len(pins)}개{end_flag}")
+            if gained > 0:
+                api_batches[0] += 1
         except Exception:
             pass
 
+    def _flush_dom(page):
+        for item in page.evaluate(_DOM_JS):
+            pid = str(item.get("id", ""))
+            raw = item.get("url", "")
+            if pid and raw and pid not in seen:
+                seen.add(pid)
+                pins.append({"id": pid, "url": to_resolution(raw, "originals")})
+
+    def _is_feed_response(r):
+        return r.status == 200 and any(x in r.url for x in _FEED_RESOURCES)
+
     with sync_playwright() as p:
         if logged_in:
-            click.echo("  로그인 세션 적용됨")
+            _log("  로그인 세션 적용됨")
             ctx = p.chromium.launch_persistent_context(
                 BROWSER_DATA_DIR,
                 headless=True,
@@ -171,7 +249,7 @@ def fetch_board_pins(board_url: str, max_pins: int) -> list:
 
         page.on("response", on_response)
 
-        click.echo("  브라우저로 보드 로딩 중...")
+        _log("  브라우저로 보드 로딩 중...")
         page.goto(normalized, wait_until="domcontentloaded", timeout=30000)
 
         try:
@@ -180,47 +258,32 @@ def fetch_board_pins(board_url: str, max_pins: int) -> list:
             ctx.close()
             raise click.ClickException("보드 핀을 찾을 수 없습니다. URL이 올바른지, 보드가 공개인지 확인하세요.")
 
-        page.wait_for_timeout(1500)
-
-        _DOM_JS = """() => {
-            const feed = document.querySelector("[data-test-id='board-feed']");
-            if (!feed) return [];
-            const seen = new Set();
-            const out = [];
-            feed.querySelectorAll("a[href*='/pin/']").forEach(a => {
-                const m = a.href.match(/\\/pin\\/(\\d+)/);
-                if (!m || seen.has(m[1])) return;
-                seen.add(m[1]);
-                const img = a.querySelector("img");
-                const src = img ? (img.src || "") : "";
-                if (src) out.push({id: m[1], url: src});
-            });
-            return out;
-        }"""
-
-        def _flush_dom(page):
-            for item in page.evaluate(_DOM_JS):
-                pid = str(item.get("id", ""))
-                raw = item.get("url", "")
-                if pid and raw and pid not in seen:
-                    seen.add(pid)
-                    pins.append({"id": pid, "url": to_resolution(raw, "originals")})
-
-        # 초기 DOM 스냅샷: 페이지 첫 로딩 시 소규모 보드 핀이 모두 여기에 있음
+        page.wait_for_timeout(2500)
         _flush_dom(page)
+        _log(f"  초기 로드: {len(pins)}개")
 
         stall = 0
-        prev_count = len(pins)
-        bar = tqdm(desc="핀 수집", unit="핀", initial=prev_count)
+        bar = tqdm(desc="핀 수집", unit="핀", initial=len(pins))
         try:
             while len(pins) < max_pins:
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(2500)
+                prev = len(pins)
+                try:
+                    with page.expect_response(_is_feed_response, timeout=7000):
+                        # 마우스 휠 + scrollTo 조합 — IntersectionObserver 확실히 트리거
+                        page.mouse.wheel(0, 5000)
+                        page.wait_for_timeout(120)
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_timeout(600)
+                except PWTimeout:
+                    stall += 1
+                    _log(f"  API 무응답 {stall}회 (현재 {len(pins)}개)")
+                    if stall >= 3:
+                        break
+                    page.wait_for_timeout(1500)
+                    continue
 
-                # 스크롤 후 DOM 스냅샷 (가상화로 새 핀이 렌더링될 수 있음)
                 _flush_dom(page)
-
-                added = len(pins) - prev_count
+                added = len(pins) - prev
                 if added > 0:
                     bar.update(added)
                     stall = 0
@@ -228,10 +291,13 @@ def fetch_board_pins(board_url: str, max_pins: int) -> list:
                     stall += 1
                     if stall >= 4:
                         break
-
-                prev_count = len(pins)
         finally:
             bar.close()
+
+        page.wait_for_timeout(2000)
+        _flush_dom(page)
+        _log(f"  최종 {len(pins)}개 / API 배치 {api_batches[0]}회")
+        _log(f"  감지된 API 타입: {', '.join(sorted(seen_resources)) or '없음'}")
 
         ctx.close()
 

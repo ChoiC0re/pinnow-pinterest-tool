@@ -11,6 +11,12 @@ a = Analysis(
     binaries=playwright_binaries,
     datas=[
         ('pinnow.py', '.'),
+        ('fonts/FlorDeRuina-Germen.otf', 'fonts'),
+        ('fonts/FlorDeRuina-Semilla.otf', 'fonts'),
+        ('fonts/Pretendard-Light.otf', 'fonts'),
+        ('fonts/Pretendard-Regular.otf', 'fonts'),
+        ('fonts/Pretendard-Bold.otf', 'fonts'),
+        ('assets/silver-pin.png', 'assets'),
         *playwright_datas,
         *bs4_datas,
     ],
@@ -62,8 +68,11 @@ if sys.platform == 'darwin':
         icon='pinnow.icns',
         bundle_identifier='com.pinnow.app',
         info_plist={
+            'CFBundleName': 'pinnow',
+            'CFBundleDisplayName': 'pinnow',
             'NSHighResolutionCapable': True,
+            'LSMultipleInstancesProhibited': True,
             'LSMinimumSystemVersion': '11.0',
-            'CFBundleShortVersionString': '1.0.0',
+            'CFBundleShortVersionString': '1.1.0',
         },
     )

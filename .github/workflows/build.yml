@@ -1,4 +1,4 @@
-name: Build
+name: Build & Release
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15        # Apple Silicon (arm64), Sequoia
+          - os: macos-15
             artifact_name: pinnow-mac-arm64.zip
           - os: windows-latest
             artifact_name: pinnow-windows.zip
@@ -32,12 +32,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller
 
-      - name: Install Playwright browsers (build-time check only)
+      - name: Playwright dry-run (skip actual browser install)
         run: playwright install chromium --dry-run
         continue-on-error: true
 
-      - name: Build
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
         run: pyinstaller pinnow.spec --noconfirm
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        # UPX 비활성화: 일부 antivirus 오탐 방지
+        run: pyinstaller pinnow.spec --noconfirm
+
+      - name: Sign app (macOS ad-hoc)
+        if: runner.os == 'macOS'
+        run: codesign --force --deep --sign - dist/pinnow.app
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -45,7 +55,8 @@ jobs:
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path dist/pinnow -DestinationPath ${{ matrix.artifact_name }}
+        shell: pwsh
+        run: Compress-Archive -Path dist/pinnow/* -DestinationPath ${{ matrix.artifact_name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -70,4 +81,27 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*.zip
-          generate_release_notes: true
+          generate_release_notes: false
+          body: |
+            ## pinnow ${{ github.ref_name }}
+
+            Pinterest 보드 및 핀 이미지 일괄 다운로더
+
+            ### 다운로드
+            | 환경 | 파일 |
+            |------|------|
+            | macOS (Apple Silicon, Sequoia / Tahoe) | `pinnow-mac-arm64.zip` |
+            | Windows (10 / 11, x64) | `pinnow-windows.zip` |
+
+            ### 설치 방법
+            **macOS**
+            1. zip 압축 해제
+            2. `pinnow.app` **우클릭 → 열기** (더블클릭 시 Gatekeeper 차단)
+            3. 최초 실행 시 Chromium 자동 설치 (~150 MB, 1~2분)
+
+            **Windows**
+            1. zip 압축 해제 후 `pinnow` 폴더 안의 `pinnow.exe` 실행
+            2. SmartScreen 경고 → **추가 정보 → 실행**
+            3. 최초 실행 시 Chromium 자동 설치 (~150 MB, 1~2분)
+
+            > macOS에서 "손상되었기 때문에 열 수 없음" 오류 시: 터미널에서 `xattr -cr /path/to/pinnow.app`

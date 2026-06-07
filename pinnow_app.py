@@ -4,11 +4,6 @@
 import sys
 import os
 import subprocess
-
-os.environ.setdefault(
-    "PLAYWRIGHT_BROWSERS_PATH",
-    os.path.expanduser("~/Library/Caches/ms-playwright"),
-)
 import re
 import time
 import threading
@@ -19,8 +14,131 @@ from PyQt6.QtWidgets import (
     QFileDialog, QSpinBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
     QScrollArea,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QPropertyAnimation, QEasingCurve, QRect, QTimer
-from PyQt6.QtGui import QFont, QColor, QPalette, QTextCursor, QPainter, QBrush, QPen, QLinearGradient, QIcon, QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QPropertyAnimation, QEasingCurve, QRect, QTimer, QLockFile, QStandardPaths
+from PyQt6.QtGui import QFont, QFontDatabase, QColor, QPalette, QTextCursor, QPainter, QBrush, QPen, QLinearGradient, QIcon, QPixmap, QImage
+
+
+APP_NAME = "pinnow"
+APP_VERSION = "1.1.0"
+ORG_NAME = "ChoiC0re"
+BRAND_FONT_FILE = "FlorDeRuina-Semilla.otf"
+PIN_IMAGE_FILE = "silver-pin.png"
+UI_FONT_FILES = ("Pretendard-Light.otf", "Pretendard-Regular.otf", "Pretendard-Bold.otf")
+BRAND_FONT_FAMILY = None
+UI_FONT_FAMILY = None
+
+
+def _resource_path(*parts: str) -> str:
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, *parts)
+
+
+def _load_brand_font() -> str:
+    global BRAND_FONT_FAMILY
+    if BRAND_FONT_FAMILY:
+        return BRAND_FONT_FAMILY
+    font_id = QFontDatabase.addApplicationFont(_resource_path("fonts", BRAND_FONT_FILE))
+    if font_id >= 0:
+        families = QFontDatabase.applicationFontFamilies(font_id)
+        if families:
+            BRAND_FONT_FAMILY = families[0]
+            return BRAND_FONT_FAMILY
+    BRAND_FONT_FAMILY = ".AppleSystemUIFont" if sys.platform == "darwin" else "Segoe UI"
+    return BRAND_FONT_FAMILY
+
+
+def _brand_font(point_size: int) -> QFont:
+    font = QFont(_load_brand_font(), point_size)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    return font
+
+
+def _load_ui_font() -> str:
+    global UI_FONT_FAMILY
+    if UI_FONT_FAMILY:
+        return UI_FONT_FAMILY
+    for filename in UI_FONT_FILES:
+        font_id = QFontDatabase.addApplicationFont(_resource_path("fonts", filename))
+        if font_id >= 0:
+            families = QFontDatabase.applicationFontFamilies(font_id)
+            if families:
+                UI_FONT_FAMILY = families[0]
+    if UI_FONT_FAMILY:
+        return UI_FONT_FAMILY
+    UI_FONT_FAMILY = ".AppleSystemUIFont" if sys.platform == "darwin" else "Segoe UI"
+    return UI_FONT_FAMILY
+
+
+def _ui_font(point_size: float, weight=QFont.Weight.Light, letter_spacing=130) -> QFont:
+    font = QFont(_load_ui_font())
+    font.setPointSizeF(point_size)
+    # Windows GDI 렌더러는 Light(25)를 너무 얇게 그림 — Normal(50)을 하한으로
+    if sys.platform == "win32" and weight < QFont.Weight.Normal:
+        weight = QFont.Weight.Normal
+    font.setWeight(weight)
+    font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, letter_spacing)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    return font
+
+
+def _pin_pixmap(width: int, height: int) -> QPixmap:
+    image = QImage(_resource_path("assets", PIN_IMAGE_FILE))
+    if image.isNull():
+        return QPixmap()
+    image = image.convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(image.height()):
+        for x in range(image.width()):
+            color = image.pixelColor(x, y)
+            if color.red() > 85 and color.green() < 70 and color.blue() < 55:
+                color.setAlpha(0)
+                image.setPixelColor(x, y, color)
+    crop = QPixmap.fromImage(image).copy(260, 150, 430, 700)
+    return crop.scaled(
+        width,
+        height,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _spaced(text: str) -> str:
+    return " ".join(text)
+
+
+def _user_cache_dir() -> str:
+    path = ""
+    if QApplication.instance() is not None:
+        path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+    if path:
+        return path
+    if sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+        return os.path.join(root, ORG_NAME, APP_NAME, "Cache")
+    if sys.platform == "darwin":
+        return os.path.expanduser(f"~/Library/Caches/{APP_NAME}")
+    return os.path.expanduser(f"~/.cache/{APP_NAME}")
+
+
+def _user_data_dir() -> str:
+    path = ""
+    if QApplication.instance() is not None:
+        path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    if path:
+        return path
+    if sys.platform == "win32":
+        root = os.environ.get("APPDATA", os.path.expanduser("~\\AppData\\Roaming"))
+        return os.path.join(root, ORG_NAME, APP_NAME)
+    if sys.platform == "darwin":
+        return os.path.expanduser(f"~/Library/Application Support/{APP_NAME}")
+    return os.path.expanduser(f"~/.local/share/{APP_NAME}")
+
+
+def _playwright_browsers_path() -> str:
+    return os.path.join(_user_cache_dir(), "ms-playwright")
+
+
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", _playwright_browsers_path())
+os.environ.setdefault("PINNOW_DATA_DIR", _user_data_dir())
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pinnow as core
@@ -29,10 +147,7 @@ import pinnow as core
 # ── Browser setup helpers ─────────────────────────────────────────────────────
 
 def _is_browser_installed() -> bool:
-    browsers_path = os.environ.get(
-        "PLAYWRIGHT_BROWSERS_PATH",
-        os.path.expanduser("~/Library/Caches/ms-playwright"),
-    )
+    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", _playwright_browsers_path())
     if not os.path.isdir(browsers_path):
         return False
     return any(
@@ -42,6 +157,7 @@ def _is_browser_installed() -> bool:
 
 
 def _install_chromium(status_cb):
+    os.makedirs(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", _playwright_browsers_path()), exist_ok=True)
     try:
         from playwright._impl._driver import compute_driver_executable
         result = compute_driver_executable()
@@ -51,8 +167,18 @@ def _install_chromium(status_cb):
         raise RuntimeError(f"playwright 드라이버를 찾을 수 없습니다: {e}")
 
     env = os.environ.copy()
-    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        creationflags=creationflags,
+    )
     for line in iter(proc.stdout.readline, ""):
         line = line.strip()
         if line:
@@ -82,49 +208,49 @@ class SetupWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("pinnow")
-        self.setFixedSize(460, 300)
+        self.setFixedSize(400, 300)
         self.setStyleSheet(f"background: {BG};")
         self._build_ui()
         self._start()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(52, 44, 52, 44)
+        layout.setContentsMargins(40, 34, 40, 34)
         layout.setSpacing(0)
 
         title = QLabel("pinnow")
-        title.setFont(QFont(".AppleSystemUIFont", 28, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {WHITE}; letter-spacing: -0.5px;")
+        title.setFont(_brand_font(48))
+        title.setStyleSheet(f"color: {WHITE};")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        layout.addSpacing(6)
+        layout.addSpacing(2)
 
-        headline = QLabel("브라우저 첫 실행 준비 중")
-        headline.setFont(QFont(".AppleSystemUIFont", 13, QFont.Weight.Medium))
+        headline = QLabel("첫 실행 준비 중")
+        headline.setFont(_ui_font(15, QFont.Weight.Bold))
         headline.setStyleSheet(f"color: {MUTED};")
         headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(headline)
 
-        layout.addSpacing(28)
+        layout.addSpacing(30)
 
         self.bar = QProgressBar()
         self.bar.setRange(0, 0)   # indeterminate
         self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(6)
+        self.bar.setFixedHeight(8)
         self.bar.setStyleSheet(f"""
             QProgressBar {{
-                border: none; border-radius: 3px; background: {BG_LIGHT};
+                border: none; border-radius: 4px; background: {PANEL};
             }}
             QProgressBar::chunk {{
-                border-radius: 3px; background: {SILVER};
+                border-radius: 4px; background: {SILVER};
             }}
         """)
         layout.addWidget(self.bar)
 
         layout.addSpacing(14)
 
-        self.status_lbl = QLabel("Chromium 다운로드 중...")
+        self.status_lbl = QLabel("Pinterest 보드 스캔용 브라우저를 설치하고 있어요.")
         self.status_lbl.setFont(QFont("Menlo", 10))
         self.status_lbl.setStyleSheet(f"color: {SILVER_D};")
         self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -133,8 +259,8 @@ class SetupWindow(QWidget):
 
         layout.addStretch()
 
-        note = QLabel("Pinterest 보드 스캔에 필요한 브라우저입니다.\n약 150–200 MB · 최초 1회만 설치됩니다.")
-        note.setFont(QFont(".AppleSystemUIFont", 11))
+        note = QLabel("약 150-200 MB · 최초 1회만 설치됩니다.")
+        note.setFont(_ui_font(11))
         note.setStyleSheet(f"color: {MUTED};")
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(note)
@@ -213,7 +339,7 @@ class DownloadWorker(QObject):
             else:
                 self.status.emit("보드 스캔 중...")
                 self.log.emit(f"보드: {self.url}")
-                pin_list = core.fetch_board_pins(self.url, self.max_pins)
+                pin_list = core.fetch_board_pins(self.url, self.max_pins, log_cb=self.log.emit)
                 self.log.emit(f"{len(pin_list)}개 핀 발견")
                 self.status.emit(f"{len(pin_list)}개 다운로드 중...")
 
@@ -258,12 +384,16 @@ class DownloadWorker(QObject):
 
 BG       = "#73170E"   # 아이콘 배경 딥 레드
 BG_LIGHT = "#8B1F12"   # 살짝 밝은 레드 (hover 등)
+BG_DARK  = "#4A0C07"
+PANEL    = "#681208"
+BORDER   = "#A73524"
 SILVER   = "#D9D9D9"   # 핀 실버
 SILVER_D = "#B0B0B0"   # 실버 어두운
 WHITE    = "#FFFFFF"
 TEXT_W   = "#F0F0F0"   # 다크 배경 위 텍스트
 TEXT_S   = "#2a2a2a"   # 실버 위 텍스트
 MUTED    = "#C4A8A8"   # 다크 배경 위 보조 텍스트
+MUTED_D  = "#9F7774"
 
 
 # ── Custom Widgets ─────────────────────────────────────────────────────────────
@@ -273,22 +403,29 @@ class PillInput(QLineEdit):
         super().__init__(parent)
         self.setPlaceholderText(placeholder)
         self.setFixedHeight(44)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.setFont(_ui_font(11.0))
         self.setStyleSheet(f"""
             QLineEdit {{
-                background: {SILVER};
-                border: 1.5px solid transparent;
+                background: #F7F7F6;
+                border: 3px solid {SILVER};
                 border-radius: 12px;
                 padding: 0 16px;
-                font-size: 13px;
                 color: {TEXT_S};
                 selection-background-color: {BG};
             }}
             QLineEdit:focus {{
                 background: {WHITE};
-                border: 1.5px solid {SILVER_D};
+                border: 3px solid {WHITE};
+                color: {BG};
+            }}
+            QLineEdit:hover {{
+                background: {WHITE};
+                border: 3px solid {WHITE};
             }}
             QLineEdit::placeholder {{
-                color: #999999;
+                color: #9A9A9A;
             }}
         """)
 
@@ -296,73 +433,62 @@ class PillInput(QLineEdit):
 class PillButton(QPushButton):
     def __init__(self, text, primary=False, parent=None):
         super().__init__(text, parent)
-        self.setFixedHeight(44)
-        if primary:
-            self.setStyleSheet(f"""
-                QPushButton {{
-                    background: {SILVER};
-                    color: {BG};
-                    border: none;
-                    border-radius: 12px;
-                    font-size: 14px;
-                    font-weight: 700;
-                    letter-spacing: 0.2px;
-                }}
-                QPushButton:hover {{ background: {WHITE}; }}
-                QPushButton:pressed {{ background: {SILVER_D}; }}
-                QPushButton:disabled {{
-                    background: {BG_LIGHT};
-                    color: {MUTED};
-                }}
-            """)
-        else:
-            self.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {SILVER};
-                    border: 1.5px solid {SILVER_D};
-                    border-radius: 12px;
-                    font-size: 13px;
-                    font-weight: 500;
-                }}
-                QPushButton:hover {{ background: {BG_LIGHT}; color: {WHITE}; }}
-                QPushButton:pressed {{ background: {BG}; }}
-                QPushButton:disabled {{ color: {MUTED}; border-color: #6B3030; }}
-            """)
+        self.setFixedHeight(42)
+        self.setFont(_ui_font(11.0))
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background: #F7F7F6;
+                color: #8F8F8F;
+                border: 3px solid {SILVER};
+                border-radius: 11px;
+            }}
+            QPushButton:hover {{ background: {WHITE}; color: {BG}; border-color: {WHITE}; }}
+            QPushButton:pressed {{ background: {SILVER_D}; }}
+            QPushButton:disabled {{
+                background: #EFE8E6;
+                color: #B5B5B5;
+                border-color: {SILVER_D};
+            }}
+        """)
 
 
 class StatusCard(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(72)
+        self.setFixedHeight(42)
         self.setObjectName("statusCard")
         self.setStyleSheet(f"""
             QWidget#statusCard {{
-                background: {BG_LIGHT};
-                border-radius: 14px;
-                border: 1px solid #A03020;
+                background: transparent;
+                border: none;
             }}
         """)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(18, 0, 18, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
         self.icon_label = QLabel("⏸")
-        self.icon_label.setFixedWidth(28)
-        self.icon_label.setFont(QFont(".AppleSystemUIFont", 20))
-        self.icon_label.setStyleSheet("background: transparent; border: none;")
+        self.icon_label.setFixedSize(24, 24)
+        self.icon_label.setFont(_ui_font(11))
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setStyleSheet(f"""
+            background: {BG_DARK};
+            border: 1px solid {BORDER};
+            border-radius: 12px;
+            color: {SILVER};
+        """)
         layout.addWidget(self.icon_label)
 
         text_col = QVBoxLayout()
-        text_col.setSpacing(2)
+        text_col.setSpacing(0)
 
-        self.title_label = QLabel("준비됨")
-        self.title_label.setFont(QFont(".AppleSystemUIFont", 13, QFont.Weight.DemiBold))
+        self.title_label = QLabel("ready")
+        self.title_label.setFont(_ui_font(10, QFont.Weight.Bold))
         self.title_label.setStyleSheet(f"background: transparent; border: none; color: {TEXT_W};")
 
-        self.sub_label = QLabel("URL을 입력하고 다운로드를 시작하세요")
-        self.sub_label.setFont(QFont(".AppleSystemUIFont", 11))
-        self.sub_label.setStyleSheet(f"background: transparent; border: none; color: {MUTED};")
+        self.sub_label = QLabel("waiting for a pinterest link")
+        self.sub_label.setFont(_ui_font(8))
+        self.sub_label.setStyleSheet(f"background: transparent; border: none; color: {MUTED_D};")
 
         text_col.addWidget(self.title_label)
         text_col.addWidget(self.sub_label)
@@ -370,7 +496,7 @@ class StatusCard(QWidget):
         layout.addStretch()
 
         self.count_label = QLabel("")
-        self.count_label.setFont(QFont(".AppleSystemUIFont", 22, QFont.Weight.Bold))
+        self.count_label.setFont(_ui_font(13, QFont.Weight.Black))
         self.count_label.setStyleSheet(f"background: transparent; border: none; color: {SILVER};")
         self.count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.count_label)
@@ -395,7 +521,7 @@ class FailedPanel(QWidget):
 
         header = QHBoxLayout()
         lbl = QLabel("다운로드 실패 목록")
-        lbl.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.DemiBold))
+        lbl.setFont(_ui_font(11, QFont.Weight.DemiBold))
         lbl.setStyleSheet(f"color: {SILVER}; background: transparent;")
         header.addWidget(lbl)
         header.addStretch()
@@ -429,7 +555,7 @@ class FailedPanel(QWidget):
                 border: none;
             }}
         """)
-        self.text.setFixedHeight(120)
+        self.text.setFixedHeight(80)
         layout.addWidget(self.text)
 
         self.anim = QPropertyAnimation(self, b"maximumHeight")
@@ -445,7 +571,7 @@ class FailedPanel(QWidget):
         self.text.setPlainText("\n".join(urls))
         if not self._visible:
             self.anim.setStartValue(0)
-            self.anim.setEndValue(154)
+            self.anim.setEndValue(112)
             self._visible = True
             self.anim.start()
 
@@ -479,7 +605,7 @@ class LogPanel(QWidget):
                 border: none;
             }}
         """)
-        self.text.setFixedHeight(130)
+        self.text.setFixedHeight(80)
         layout.addWidget(self.text)
 
         self.anim = QPropertyAnimation(self, b"maximumHeight")
@@ -493,7 +619,7 @@ class LogPanel(QWidget):
             self._visible = False
         else:
             self.anim.setStartValue(0)
-            self.anim.setEndValue(146)
+            self.anim.setEndValue(96)
             self._visible = True
         self.anim.start()
 
@@ -513,17 +639,18 @@ QLabel {{
     background: transparent;
 }}
 QSpinBox {{
-    background: {SILVER};
+    background: #EFE8E6;
     border: 1.5px solid transparent;
     border-radius: 10px;
     padding: 4px 10px;
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 700;
     color: {TEXT_S};
-    min-height: 36px;
+    min-height: 38px;
 }}
 QSpinBox:focus {{
     background: {WHITE};
-    border: 1.5px solid {SILVER_D};
+    border: 1.5px solid {SILVER};
 }}
 QSpinBox::up-button, QSpinBox::down-button {{
     width: 20px;
@@ -532,12 +659,13 @@ QSpinBox::up-button, QSpinBox::down-button {{
 }}
 QProgressBar {{
     border: none;
-    border-radius: 3px;
-    background: {BG_LIGHT};
-    max-height: 6px;
+    border-radius: 4px;
+    background: {PANEL};
+    min-height: 8px;
+    max-height: 8px;
 }}
 QProgressBar::chunk {{
-    border-radius: 3px;
+    border-radius: 4px;
     background: {SILVER};
 }}
 """
@@ -547,9 +675,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("pinnow")
-        self.setMinimumSize(520, 560)
-        self.setMaximumWidth(640)
-        self.resize(560, 600)
+        self.setFixedSize(400, 540)
+        # Windows: 최대화 버튼 제거 (setFixedSize만으로는 제거 안 됨)
+        if sys.platform == "win32":
+            self.setWindowFlag(Qt.WindowType.MSWindowsFixedSizeDialogHint)
         self._worker = None
         self._thread = None
         self._output = os.path.expanduser("~/Downloads/pinnow")
@@ -559,129 +688,132 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         root = QWidget()
         root.setObjectName("root")
+        root.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCentralWidget(root)
 
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(28, 32, 28, 24)
+        layout.setContentsMargins(36, 60, 36, 18)
         layout.setSpacing(0)
 
         # ── Header
-        logo_row = QHBoxLayout()
-        logo_row.setSpacing(8)
-
-        dot = QLabel("●")
-        dot.setFont(QFont(".AppleSystemUIFont", 16))
-        dot.setStyleSheet(f"color: {SILVER};")
-        logo_row.addWidget(dot)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(14)
 
         title = QLabel("pinnow")
-        title.setFont(QFont(".AppleSystemUIFont", 22, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {WHITE}; letter-spacing: -0.5px;")
-        logo_row.addWidget(title)
-        logo_row.addStretch()
+        title.setFont(_brand_font(52))
+        title.setStyleSheet(f"color: {WHITE};")
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header_row.addWidget(title, 1)
 
-        sub = QLabel("Pinterest Image Downloader")
-        sub.setFont(QFont(".AppleSystemUIFont", 11))
-        sub.setStyleSheet(f"color: {MUTED};")
-        logo_row.addWidget(sub)
+        tagline = QLabel("for all the\nheavy users\nof pinterest")
+        tagline.setFont(_ui_font(10.0))
+        tagline.setStyleSheet(f"color: {WHITE};")
+        tagline.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header_row.addWidget(tagline)
 
-        layout.addLayout(logo_row)
-        layout.addSpacing(24)
+        layout.addLayout(header_row)
 
-        # ── URL 입력
-        url_label = QLabel("URL")
-        url_label.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Medium))
-        url_label.setStyleSheet(f"color: {MUTED};")
-        layout.addWidget(url_label)
-        layout.addSpacing(5)
+        layout.addSpacing(26)
 
-        self.url_input = PillInput("pinterest.com/username/board  또는  pin.it/xxxxx")
+        self.url_input = PillInput("drop your pinterest link here!")
         layout.addWidget(self.url_input)
-        layout.addSpacing(14)
+        layout.addSpacing(12)
 
-        # ── 저장 폴더
-        folder_label = QLabel("저장 위치")
-        folder_label.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Medium))
-        folder_label.setStyleSheet(f"color: {MUTED};")
-        layout.addWidget(folder_label)
-        layout.addSpacing(5)
-
-        row_dir = QHBoxLayout()
-        row_dir.setSpacing(8)
         self.dir_input = PillInput()
-        self.dir_input.setText(self._output)
-        row_dir.addWidget(self.dir_input)
+        self.dir_input.setPlaceholderText("your images go to")
+        self.dir_input.setReadOnly(True)
+        self.dir_input.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dir_input.mousePressEvent = lambda event: self._browse()
+        layout.addWidget(self.dir_input)
 
-        browse_btn = PillButton("찾기")
-        browse_btn.setFixedWidth(72)
-        browse_btn.clicked.connect(self._browse)
-        row_dir.addWidget(browse_btn)
-        layout.addLayout(row_dir)
-        layout.addSpacing(14)
+        layout.addSpacing(20)
 
-        # ── 최대 핀 수
-        row_max = QHBoxLayout()
-        row_max.setSpacing(10)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(20)
 
-        max_label = QLabel("최대 핀 수")
-        max_label.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Medium))
-        max_label.setStyleSheet(f"color: {MUTED};")
-        row_max.addWidget(max_label)
+        pin_art = QLabel()
+        pin_art.setFixedSize(90, 140)
+        pin_art.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pin_art.setPixmap(_pin_pixmap(90, 140))
+        action_row.addWidget(pin_art)
 
-        self.max_spin = QSpinBox()
-        self.max_spin.setRange(1, 9999)
-        self.max_spin.setValue(999)
-        self.max_spin.setFixedWidth(100)
-        row_max.addWidget(self.max_spin)
-        row_max.addStretch()
-        layout.addLayout(row_max)
-        layout.addSpacing(22)
+        control_col = QVBoxLayout()
+        control_col.setSpacing(8)
 
-        # ── 버튼 행
-        row_btn = QHBoxLayout()
-        row_btn.setSpacing(10)
-
-        self.start_btn = PillButton("다운로드 시작", primary=True)
-        self.start_btn.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.DemiBold))
+        self.start_btn = PillButton("download images", primary=True)
         self.start_btn.clicked.connect(self._start)
-        row_btn.addWidget(self.start_btn)
+        control_col.addWidget(self.start_btn)
 
-        self.stop_btn = PillButton("중단")
-        self.stop_btn.setFixedWidth(80)
+        self.stop_btn = PillButton("stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._stop)
-        row_btn.addWidget(self.stop_btn)
+        control_col.addWidget(self.stop_btn)
 
-        layout.addLayout(row_btn)
-        layout.addSpacing(18)
+        pin_box = QFrame()
+        pin_box.setFixedHeight(52)
+        pin_box.setStyleSheet(f"""
+            QFrame {{
+                background: transparent;
+                border: 3px solid {SILVER};
+                border-radius: 10px;
+            }}
+        """)
+        pin_layout = QVBoxLayout(pin_box)
+        pin_layout.setContentsMargins(10, 6, 10, 6)
+        pin_layout.setSpacing(1)
+
+        max_label = QLabel("verified pin")
+        max_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        max_label.setFont(_ui_font(11.0, QFont.Weight.Bold))
+        max_label.setStyleSheet(f"color: {WHITE}; background: transparent; border: none;")
+        pin_layout.addWidget(max_label)
+
+        self.pin_count_label = QLabel("999")
+        self.pin_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pin_count_label.setFont(_ui_font(13.0, QFont.Weight.Bold))
+        self.pin_count_label.setStyleSheet(f"""
+            QLabel {{
+                background: transparent;
+                border: none;
+                color: {WHITE};
+            }}
+        """)
+        pin_layout.addWidget(self.pin_count_label)
+        control_col.addWidget(pin_box)
+        control_col.addStretch()
+        action_row.addLayout(control_col, 1)
+
+        layout.addLayout(action_row)
+        layout.addSpacing(14)
 
         # ── 진행바
         self.progress = QProgressBar()
         self.progress.setValue(0)
         self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
-        layout.addSpacing(14)
 
-        # ── 상태 카드
+        layout.addSpacing(8)
+
+        # ── 상태 카드 (항상 표시 — 레이아웃 shift 방지)
         self.status_card = StatusCard()
         layout.addWidget(self.status_card)
-        layout.addSpacing(12)
 
         # ── 실패 목록 패널
         self.failed_panel = FailedPanel()
         layout.addWidget(self.failed_panel)
-        layout.addSpacing(4)
+
+        layout.addStretch()
 
         # ── 로그 토글 & Finder 버튼
         log_row = QHBoxLayout()
-        self.log_toggle = QPushButton("로그 보기")
+        self.log_toggle = QPushButton("details")
         self.log_toggle.setCheckable(True)
-        self.log_toggle.setFixedHeight(28)
+        self.log_toggle.setFixedHeight(24)
         self.log_toggle.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 border: none;
-                color: {MUTED};
+                color: {MUTED_D};
                 font-size: 11px;
                 text-align: left;
                 padding: 0;
@@ -693,15 +825,15 @@ class MainWindow(QMainWindow):
         log_row.addWidget(self.log_toggle)
         log_row.addStretch()
 
-        self.open_btn = QPushButton("Finder에서 열기 →")
+        self.open_btn = QPushButton("open folder")
         self.open_btn.setEnabled(False)
-        self.open_btn.setFixedHeight(28)
+        self.open_btn.setFixedHeight(24)
         self.open_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 border: none;
                 color: {WHITE};
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: 600;
             }}
             QPushButton:hover {{ color: {SILVER}; }}
@@ -709,28 +841,36 @@ class MainWindow(QMainWindow):
         """)
         self.open_btn.clicked.connect(self._open_finder)
         log_row.addWidget(self.open_btn)
-        layout.addLayout(log_row)
+        self.log_row_widget = QWidget()
+        self.log_row_widget.setLayout(log_row)
+        layout.addWidget(self.log_row_widget)
 
         self.log_panel = LogPanel()
+        self.log_panel.hide()
         layout.addWidget(self.log_panel)
 
-        layout.addStretch()
+        footer = QLabel("all rights reserved choic0re")
+        footer.setFont(_ui_font(10.0))
+        footer.setStyleSheet(f"color: {WHITE};")
+        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(footer)
+        root.setFocus()
 
     def _toggle_log(self):
         self.log_panel.toggle()
-        self.log_toggle.setText("로그 숨기기" if self.log_panel._visible else "로그 보기")
-        QTimer.singleShot(240, lambda: self.resize(self.width(),
-            self.minimumSizeHint().height() + 20 if self.log_panel._visible else 600))
+        self.log_toggle.setText("hide details" if self.log_panel._visible else "details")
 
     def _browse(self):
-        path = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", self.dir_input.text())
+        path = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", self.dir_input.text() or self._output)
         if path:
             self.dir_input.setText(path)
+            self._output = path
 
     def _set_progress(self, cur: int, total: int):
         if total > 0:
             self.progress.setMaximum(total)
             self.progress.setValue(cur)
+            self.pin_count_label.setText(str(cur))
             pct = int(cur / total * 100)
             self.status_card.set_state("⬇", "다운로드 중", f"{cur} / {total}개", f"{pct}%")
 
@@ -742,7 +882,7 @@ class MainWindow(QMainWindow):
 
     def _start(self):
         url = self.url_input.text().strip()
-        output = self.dir_input.text().strip()
+        output = self.dir_input.text().strip() or self._output
         if not url:
             self.status_card.set_state("⚠", "URL을 입력하세요", "pinterest.com 링크 또는 pin.it 단축 URL", "")
             return
@@ -752,12 +892,13 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.open_btn.setEnabled(False)
         self.progress.setValue(0)
+        self.pin_count_label.setText("0")
         self.log_panel.text.clear()
         self.failed_panel.hide_panel()
         self.status_card.set_state("⏳", "시작 중...", "브라우저를 여는 중입니다", "")
 
         self._thread = QThread()
-        self._worker = DownloadWorker(url, output, self.max_spin.value())
+        self._worker = DownloadWorker(url, output, 999)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.log.connect(self._log)
@@ -781,32 +922,78 @@ class MainWindow(QMainWindow):
         self.open_btn.setEnabled(True)
         self.progress.setMaximum(max(ok + fail, 1))
         self.progress.setValue(ok + fail)
+        self.pin_count_label.setText(str(ok))
 
         if fail == 0:
             self.status_card.set_state("✓", "완료", "모든 이미지가 저장되었습니다", f"{ok}개")
         else:
-            self.status_card.set_state("⚠", f"완료  {ok}개 성공 / {fail}개 실패", "아래 링크를 다시 시도해보세요", f"{fail}개")
+            self.status_card.set_state("⚠", f"{ok}개 성공 / {fail}개 실패", "details 눌러서 확인", f"{fail}개 누락")
+
+        # 완료 시 log 패널 자동 오픈
+        if not self.log_panel._visible:
+            self.log_toggle.setChecked(True)
+            self.log_panel.toggle()
 
     def _open_finder(self):
-        os.system(f'open "{self._output}"')
+        path = os.path.abspath(self._output)
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        elif sys.platform == "win32":
+            os.startfile(path)
+        else:
+            subprocess.Popen(["xdg-open", path])
 
 
 # ── 진입점 ────────────────────────────────────────────────────────────────────
 
 def main():
+    # Windows: QApplication 생성 전 DPI 설정 필수
+    if sys.platform == "win32":
+        os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+        os.environ.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "RoundPreferFloor")
+
+    QApplication.setOrganizationName(ORG_NAME)
+    QApplication.setApplicationName(APP_NAME)
     app = QApplication(sys.argv)
-    app.setStyle("macOS")
-    app.setFont(QFont(".AppleSystemUIFont", 13))
+
+    lock_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation) or _user_cache_dir()
+    os.makedirs(lock_dir, exist_ok=True)
+    lock = QLockFile(os.path.join(lock_dir, f"pinnow.lock"))
+    lock.setStaleLockTime(0)
+    if not lock.tryLock(100):
+        return
+
+    app._pinnow_lock = lock
+    app.setStyle("macOS" if sys.platform == "darwin" else "Fusion")
+
+    # Windows Fusion 테마의 기본 팔레트가 앱 배경을 덮어쓰는 문제 방지
+    if sys.platform == "win32":
+        pal = app.palette()
+        pal.setColor(QPalette.ColorRole.Window,         QColor(BG))
+        pal.setColor(QPalette.ColorRole.WindowText,     QColor(TEXT_W))
+        pal.setColor(QPalette.ColorRole.Base,           QColor(BG_DARK))
+        pal.setColor(QPalette.ColorRole.AlternateBase,  QColor(BG_LIGHT))
+        pal.setColor(QPalette.ColorRole.Text,           QColor(TEXT_W))
+        pal.setColor(QPalette.ColorRole.BrightText,     QColor(WHITE))
+        pal.setColor(QPalette.ColorRole.Button,         QColor(SILVER))
+        pal.setColor(QPalette.ColorRole.ButtonText,     QColor(TEXT_S))
+        pal.setColor(QPalette.ColorRole.Highlight,      QColor(BG_LIGHT))
+        pal.setColor(QPalette.ColorRole.HighlightedText,QColor(WHITE))
+        app.setPalette(pal)
+
+    app.setFont(_ui_font(13))
 
     if _is_browser_installed():
         win = MainWindow()
         win.show()
     else:
         setup = SetupWindow()
-        win = MainWindow()
+        state = {"win": None}
 
         def _launch():
             setup.close()
+            win = MainWindow()
+            state["win"] = win
             win.show()
 
         setup.setup_done.connect(_launch)
